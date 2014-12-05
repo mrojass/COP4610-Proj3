@@ -107,9 +107,9 @@ int read(string file_name, uint start_pos, uint num_bytes);
 int write(string file_name, uint start_pos, string quoted_data);
 int rm(uint, char*);
 int cd(uint&, uint&, char*);
-int ls(uint currentcluster);
-int mkdir(string dir_name);
-int rmdir(string dir_name);
+int ls(uint);
+int mkdir(uint, char*);
+int rmdir(uint, char*);
 int size(uint, char*);
 int undelete();
 
@@ -130,6 +130,7 @@ long getentryoffset(uint, char*);
 void emptycluster(uint);
 void printcluster(uint);
 int getrecords(uint);
+int getfiles(uint);
 
 // globals
 FILE *file;
@@ -255,8 +256,40 @@ int main(int argc, char* argv[])
 				}
 				break;
 			}				
-			case MKDIR: break;
-			case RMDIR: break;
+			case MKDIR: {
+				int res = RESULT_WAIT;
+				arg1 = strtok(NULL, " \n");
+				
+				if(arg1 == NULL) {
+					printf(" No directory name specified.\n");
+				} else {	
+					res = mkdir(currentcluster, arg1);
+				}
+
+				if(res == RESULT_ERROR) {
+					printf(" Directory already exists!\n");
+				} else if(res == RESULT_OK) {
+					printf(" Directory created.\n");
+				}
+				break;
+				}
+			case RMDIR: {
+				int res = RESULT_WAIT;
+				arg1 = strtok(NULL, " \n");
+				
+				if(arg1 == NULL) {
+					printf(" No directory name specified.\n");
+				} else {	
+					res = rmdir(currentcluster, arg1);
+				}
+
+				if(res == RESULT_ERROR) {
+					printf(" Can't delete directory.\n");
+				} else if(res == RESULT_OK) {
+					printf(" Directory removed.\n");
+				}
+				break;
+				}
 			case SIZE: {
 				int res = RESULT_WAIT;
 				arg1 = strtok(NULL, " \n");
@@ -498,7 +531,7 @@ int cd(uint &currentcluster, uint &parentcluster, char* dir_name) {
 	uint temp1, temp2;
 	char parentstring[3] = {'.','.','\0'}; // idk, g++ yells at me if i don't do this
 
-	if(currentcluster == 0x0) { // ends up as 0 for some reason, set as RootClus
+	if(currentcluster == 0) { // ends up as 0 for some reason, set as RootClus
 		currentcluster = BPB32.BPB_RootClus;
 	}
 
@@ -507,17 +540,23 @@ int cd(uint &currentcluster, uint &parentcluster, char* dir_name) {
 
 	TEMPDIR = DIR;
 	currentcluster = unraveldirectory(currentcluster, dir_name);
-	parentcluster = getdircluster(currentcluster, parentstring);
-
-	DIR = setdir(parentcluster,dir_name);
-
+	if(currentcluster == 0) {
+		currentcluster = 2;
+	}
+	
+	if(currentcluster == 2) {
+		parentcluster = -1;
+	} else {
+		parentcluster = getdircluster(currentcluster, parentstring);
+	}
+	DIR = setdir(currentcluster,dir_name);
 	if(DIR.DIR_Attr == ATTR_DIRECTORY) {
 		parentcluster = getdircluster(currentcluster, parentstring);
 		return RESULT_OK;
 	} else {
 		currentcluster = temp1; // something went wrong, revert to original values
 		parentcluster = temp2;
-		//DIR = TEMPDIR;
+		DIR = TEMPDIR;
 		return RESULT_ERROR;
 	}
 }
@@ -600,6 +639,173 @@ int ls(uint currentcluster) {
 
 	return RESULT_OK;
 }
+
+int mkdir(uint currentcluster, char* dir_name) {
+	long offset;
+	uint newcluster;
+	char dname[12];
+	int temp;
+	struct DIR EMPTY;
+
+	for(int i = 0; dir_name[i] != '\0'; i++) {
+		dir_name[i] = toupper(dir_name[i]);
+	}
+
+	for(int i = 0; i < 8; i++) {
+		if(dir_name[i] != '\0') {
+			dname[i] = dir_name[i];
+			temp = i;
+		} else {
+			temp = i;
+			break;		
+		}
+	}
+	
+	for( ; temp < 11; temp++) {
+		dname[temp] = ' ';
+	}
+
+	dname[11] = '\0';
+
+	DIR = getdir(currentcluster, dname);
+	if(DIR.DIR_Name[0] == 0) {
+		offset = getunusedentry(currentcluster);
+
+		for(int i = 0; i < 11; i++) {
+			EMPTY.DIR_Name[i] = dname[i];
+		}
+
+		EMPTY.DIR_Attr = ATTR_DIRECTORY;
+		EMPTY.DIR_NTRes = 0;
+		EMPTY.DIR_FileSize = 0;
+
+		fseek(file, BPB32.BPB_FSInfo*BPB32.BPB_BytsPerSec, SEEK_SET);
+		fread(&FSI, sizeof(struct FSI), 1, file);
+
+		if(FSI.FSI_Nxt_Free == 0xFFFFFFFF) {
+			newcluster = 2;
+		} else {
+			newcluster = FSI.FSI_Nxt_Free+1;
+		}
+
+		while(1) {
+			if(getfat(newcluster == 0)) {
+				EMPTY.DIR_FstClusHI = (newcluster >> 16);
+				EMPTY.DIR_FstClusLO = (newcluster & 0xFFFF);
+				setcluster(0x0FFFFFF8, newcluster);
+				FSI.FSI_Nxt_Free = newcluster;
+
+				fseek(file, BPB32.BPB_FSInfo*BPB32.BPB_BytsPerSec, SEEK_SET);
+				fwrite(&FSI, sizeof(struct FSI), 1, file);
+				fflush(file);
+				break;
+			}
+
+			if(newcluster == 0xFFFFFFFF) {
+				newcluster = 1;
+			}
+
+			newcluster++;
+		}
+
+		fseek(file, offset, SEEK_SET);
+		fwrite(&EMPTY, sizeof(struct DIR), 1, file);
+		fflush(file);
+
+
+		// create . and .. for new directory
+		offset = getunusedentry(newcluster);
+		for(int i = 0; i < 12; i++) {
+			if(i == 0) {
+				EMPTY.DIR_Name[0] = '.';
+			} else {
+				EMPTY.DIR_Name[i] = ' ';
+			}
+		}
+		EMPTY.DIR_Attr = ATTR_DIRECTORY;
+		EMPTY.DIR_NTRes = 0;
+		EMPTY.DIR_FileSize = 0;
+		EMPTY.DIR_FstClusHI = (newcluster >> 16);
+		EMPTY.DIR_FstClusLO = (newcluster & 0xFFFF);
+		fseek(file, offset, SEEK_SET);
+		fwrite(&EMPTY, sizeof(struct DIR), 1, file);
+
+		offset = getunusedentry(newcluster);
+		for(int i = 0; i < 12; i++) {
+			if(i <= 1) {
+				EMPTY.DIR_Name[i] = '.';
+			} else {
+				EMPTY.DIR_Name[i] = ' ';
+			}
+		}
+		EMPTY.DIR_Attr = ATTR_DIRECTORY;
+		EMPTY.DIR_NTRes = 0;
+		EMPTY.DIR_FileSize = 0;
+		EMPTY.DIR_FstClusHI = 0;
+		EMPTY.DIR_FstClusLO = 0;
+		fseek(file, offset, SEEK_SET);
+		fwrite(&EMPTY, sizeof(struct DIR), 1, file);
+		
+
+		return RESULT_OK;
+	} else {
+		return RESULT_ERROR;
+	}
+	
+}
+
+int rmdir(uint currentcluster, char* dir_name) {
+	long offset;
+	uint newcluster;
+	char dname[12];
+	int temp;
+	char blank[32];
+
+	if(currentcluster == 0) {
+		currentcluster = 2;
+	}
+
+	for(int i = 0; dir_name[i] != '\0'; i++) {
+		dir_name[i] = toupper(dir_name[i]);
+	}
+
+	for(int i = 0; i < 8; i++) {
+		if(dir_name[i] != '\0') {
+			dname[i] = dir_name[i];
+			temp = i;
+		} else {
+			temp = i;
+			break;		
+		}
+	}
+	
+	for( ; temp < 11; temp++) {
+		dname[temp] = ' ';
+	}
+
+	dname[11] = '\0';
+
+	DIR = getdir(currentcluster, dname);
+	offset = getentryoffset(currentcluster, dname);
+
+	if(DIR.DIR_Name[0] != 0) {
+		//printf( "FILES [%d]\n",getdircluster(currentcluster,dir_name));
+		if(DIR.DIR_Attr == ATTR_DIRECTORY && getfiles(getdircluster(currentcluster,dir_name)) == 0) {
+			newcluster = (DIR.DIR_FstClusHI << 16 | DIR.DIR_FstClusLO);
+			emptycluster(newcluster);
+			fseek(file, offset, SEEK_SET);
+			fwrite(&blank, 32, 1, file);
+
+			return RESULT_OK;
+		} else {
+			return RESULT_ERROR;		
+		}
+	} else {
+		return RESULT_ERROR;
+	}
+	
+}
+
 
 int size(uint currentcluster, char* entry_name) {
 	
@@ -887,8 +1093,9 @@ uint getdircluster(uint cluster, char* dirname) {
 					}
 				}
 				
-
+				//printf( "STRCMP [%s] [%s]\n",fname,dirname);
 				if(strcmp(fname, dirname) == 0) {
+					//printf( " !FOUND\n");
 					return (DIR.DIR_FstClusHI << 16 | DIR.DIR_FstClusLO);
 				}
 			}
@@ -1061,6 +1268,7 @@ void emptycluster(uint cluster) {
 
 void printcluster(uint cluster) {
 	printf( "CURRENT CLUSTER: [%d]\n",cluster);
+	printf( "FILES: [%d]\n",getfiles(cluster));
 }
 
 int getrecords(uint cluster) {
@@ -1103,3 +1311,46 @@ int getrecords(uint cluster) {
 
 	return records;
 } 
+
+int getfiles(uint cluster) {
+	int files = 0;
+	long offset;
+
+	if(cluster == 0) {
+		cluster = 2;
+	}
+
+	while(1) {
+		offset = getsectoroffset(getfirstsector(cluster));
+		fseek(file, offset, SEEK_SET);
+
+		while(offset < getsectoroffset(getfirstsector(cluster))+getsectorbytes()) {
+
+			fread(&DIR, sizeof(struct DIR), 1, file);
+
+			//printf(" ### [%s]\n",DIR.DIR_Name);
+			if(DIR.DIR_Name[0] == 0x0) {
+				offset += 32;
+				continue;
+			} else if(DIR.DIR_Name[0] == 0xE5) {
+				break;
+			} else if(DIR.DIR_Name[0] == 0x5) {
+				DIR.DIR_Name[0] = 0xE5;
+			}
+
+			if(DIR.DIR_Attr == ATTR_ARCHIVE) {
+				files++;
+			}
+
+			offset += 32;
+		}
+
+		cluster = getfat(cluster);
+		if (cluster >=  0x0FFFFFF8) { // EOF
+			break;
+		}
+		
+	}
+
+	return files;
+}
