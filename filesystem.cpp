@@ -2,6 +2,7 @@
 #include <string>
 #include <string.h>
 #include <cstdint>
+#include <stack>
 using namespace std;
 
 // commands
@@ -124,6 +125,7 @@ struct DIR getdir(uint, char*);
 struct DIR setdir(uint, char*);
 uint getdircluster(uint, char*);
 uint unraveldirectory(uint, char*);
+uint unravelpath(uint, char*);
 void setcluster(uint, uint);
 long getunusedentry(uint);
 long getentryoffset(uint, char*);
@@ -131,12 +133,14 @@ void emptycluster(uint);
 void printcluster(uint);
 int getrecords(uint);
 int getfiles(uint);
+void printpath(void);
 
 // globals
 FILE *file;
 struct BPB32 BPB32;
 struct FSI FSI;
 struct DIR DIR;
+stack<string> workingdir;
 
 int main(int argc, char* argv[])
 {
@@ -145,6 +149,8 @@ int main(int argc, char* argv[])
 	uint currentcluster, parentcluster;
 	char *token, *temp, *arg1, *arg2;
 
+	workingdir.push("/");
+
 	if(argc != 2) { printf("./a.out [image]\n"); exit(0); }
 	
 	imgname = argv[1];
@@ -152,14 +158,12 @@ int main(int argc, char* argv[])
 	file = fopen(imgname.c_str(), "rb+");
 	fread(&BPB32, sizeof(struct BPB32), 1, file);
 
-	working = '/' + '\0'; // TODO actually use this to print out working directory
-	parent = '\0';
-
 	currentcluster = BPB32.BPB_RootClus;
 	parentcluster = -1;
 	
 	while(halt == 0) {
-		cout << "prompt$ ";
+		printpath();
+		cout << " $ ";
 
 		// read & tokenize input
 		getline(cin, cmd);
@@ -173,7 +177,7 @@ int main(int argc, char* argv[])
 		// do command (q to quit)
 		switch(parsecommand(token)) {
 			case FSINFO: fsinfo(); break;
-			case OPEN: { // TODO wrong one to start with lmao
+			case OPEN: {
 				arg1 = strtok(NULL, " \n");
 				arg2 = strtok(NULL, " \n");
 				//printf("TEST - [%s] [%s]\n",arg1,arg2);
@@ -538,8 +542,27 @@ int cd(uint &currentcluster, uint &parentcluster, char* dir_name) {
 	temp1 = currentcluster;
 	temp2 = parentcluster;
 
+	if(strcmp(dir_name,"/") == 0) { // root
+		currentcluster = BPB32.BPB_RootClus;
+		parentcluster = -1;
+		return RESULT_OK;
+	} else if(strcmp(dir_name,".") == 0) { // do nothing?
+		return RESULT_OK;
+	} else if(strcmp(dir_name, "..") == 0) {
+		if(currentcluster != BPB32.BPB_RootClus) { // do nothing if root
+			workingdir.pop();
+			workingdir.pop();
+			parentcluster = getdircluster(currentcluster, parentstring);
+			currentcluster = parentcluster;			
+		} else {
+			currentcluster = BPB32.BPB_RootClus;
+			parentcluster = -1;
+		}
+		return RESULT_OK;
+	}
+
 	TEMPDIR = DIR;
-	currentcluster = unraveldirectory(currentcluster, dir_name);
+	currentcluster = unravelpath(currentcluster, dir_name);
 	if(currentcluster == 0) {
 		currentcluster = 2;
 	}
@@ -1133,6 +1156,40 @@ uint unraveldirectory(uint cluster, char* dirname) {
 	}
 }
 
+uint unravelpath(uint cluster, char* dirname) {
+	char* token;
+	char* rest;
+
+	if(cluster == RESULT_ERROR) {
+		return RESULT_ERROR;
+	}
+
+	token = strtok(dirname, " /\n");
+	rest = strtok(NULL, " \n");
+
+	if(token != NULL) {
+		if(strcmp(token,"..") == 0) {
+			workingdir.pop();
+			workingdir.pop();
+
+			if(workingdir.empty()) {
+				workingdir.push("/");
+			}
+		} else {
+			string d(token);
+			workingdir.push(d);
+			workingdir.push("/");
+		}
+	}
+	//printf(" ### TOKEN [%s]\n",token);
+
+	if(rest == NULL) {
+		return getdircluster(cluster, token);
+	} else {
+		unravelpath(getdircluster(cluster,token), rest);
+	}
+}
+
 void setcluster(uint v, uint cluster) {
 	long offset = BPB32.BPB_RsvdSecCnt*BPB32.BPB_BytsPerSec + cluster*4;
 
@@ -1353,4 +1410,21 @@ int getfiles(uint cluster) {
 	}
 
 	return files;
+}
+
+void printpath(void) {
+	stack<string> s;
+	stack<string> q;
+
+	s = workingdir;
+
+	while(!s.empty()){
+		q.push(s.top());
+		s.pop();
+	}
+
+	while(!q.empty()){
+		cout << q.top();
+		q.pop();
+	} 
 }
