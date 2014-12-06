@@ -145,7 +145,7 @@ stack<string> workingdir;
 int main(int argc, char* argv[])
 {
 	int halt = 0;
-	string cmd, imgname, working, parent;
+	string cmd, imgname;
 	uint currentcluster, parentcluster;
 	char *token, *temp, *arg1, *arg2;
 
@@ -223,6 +223,7 @@ int main(int argc, char* argv[])
 				}
 			case CD: {
 				int res = RESULT_WAIT;
+				int dircount = workingdir.size();
 				arg1 = strtok(NULL, " \n");
 				
 				if(arg1 == NULL) {
@@ -233,6 +234,9 @@ int main(int argc, char* argv[])
 				}
 
 				if(res == RESULT_ERROR) {
+					while(dircount < workingdir.size()) { // undo working directory if error
+						workingdir.pop();
+					}
 					printf(" Directory not found!\n");
 				}
 				break;
@@ -396,7 +400,7 @@ int create(uint currentcluster, char* file_name) {
 	fname[11] = '\0';
 	DIR = getdir(currentcluster,fname);
 
-	//printf("NAME: [%s]\n", DIR.DIR_Name);
+	//printf("DIR_NAME: [%s]\n", DIR.DIR_Name);
 
 	if(DIR.DIR_Name[0] == 0) { // last entry
 		offset = getunusedentry(currentcluster); // create file at next empty entry
@@ -512,7 +516,7 @@ int rm(uint currentcluster, char* file_name) {
 
 	if(DIR.DIR_Name[0] != 0) {
 		if(DIR.DIR_Attr == ATTR_ARCHIVE) {
-			//printf(" ### RM\n");
+			//printf(" ### Success\n");
 			//printf(" ### offset [%lu]\n", offset);
 
 			newcluster = (DIR.DIR_FstClusHI << 16 | DIR.DIR_FstClusLO);
@@ -532,10 +536,12 @@ int rm(uint currentcluster, char* file_name) {
 
 int cd(uint &currentcluster, uint &parentcluster, char* dir_name) {
 	struct DIR TEMPDIR;
+	int temp;
 	uint temp1, temp2;
 	char parentstring[3] = {'.','.','\0'}; // idk, g++ yells at me if i don't do this
+	char dname[12];
 
-	if(currentcluster == 0) { // ends up as 0 for some reason, set as RootClus
+	if(currentcluster == 0) { // ends up as 0 for some reason, set as RootClus (2)
 		currentcluster = BPB32.BPB_RootClus;
 	}
 
@@ -562,7 +568,7 @@ int cd(uint &currentcluster, uint &parentcluster, char* dir_name) {
 	}
 
 	TEMPDIR = DIR;
-	currentcluster = unravelpath(currentcluster, dir_name);
+	currentcluster = unravelpath(currentcluster, dir_name); // add path to working directory stack
 	if(currentcluster == 0) {
 		currentcluster = 2;
 	}
@@ -812,7 +818,7 @@ int rmdir(uint currentcluster, char* dir_name) {
 	offset = getentryoffset(currentcluster, dname);
 
 	if(DIR.DIR_Name[0] != 0) {
-		//printf( "FILES [%d]\n",getdircluster(currentcluster,dir_name));
+		//printf( "# of files [%d]\n",getdircluster(currentcluster,dir_name));
 		if(DIR.DIR_Attr == ATTR_DIRECTORY && getfiles(getdircluster(currentcluster,dir_name)) == 0) {
 			newcluster = (DIR.DIR_FstClusHI << 16 | DIR.DIR_FstClusLO);
 			emptycluster(newcluster);
@@ -1004,7 +1010,7 @@ struct DIR getdir(uint cluster, char* dirname) {
 
 				//printf("### GETDIR COMPARE [%s] [%s]\n",fname,dirname);
 				if(strcmp(fname, dirname) == 0) {
-					//printf( "got it\n");
+					//printf( "getdir success\n");
 					return TEMPDIR;
 				}
 			}
@@ -1062,7 +1068,7 @@ struct DIR setdir(uint cluster, char* dirname) {
 
 				//printf("### SETDIR COMPARE [%s] [%s]\n",fname,dirname);
 				if(strcmp(fname, dirname) == 0) {
-					//printf( "got it?\n");
+					//printf( "setdir success\n");
 					return DIR;
 				}
 			}
@@ -1118,7 +1124,7 @@ uint getdircluster(uint cluster, char* dirname) {
 				
 				//printf( "STRCMP [%s] [%s]\n",fname,dirname);
 				if(strcmp(fname, dirname) == 0) {
-					//printf( " !FOUND\n");
+					//printf( " getdircluster success\n");
 					return (DIR.DIR_FstClusHI << 16 | DIR.DIR_FstClusLO);
 				}
 			}
@@ -1136,7 +1142,7 @@ uint getdircluster(uint cluster, char* dirname) {
 	return RESULT_ERROR;
 }
 
-uint unraveldirectory(uint cluster, char* dirname) {
+uint unraveldirectory(uint cluster, char* dirname) { // get cluster of concatenated path ("GREEN/GREEN1/GREEN2", etc)
 	char* token;
 	char* rest;
 
@@ -1156,7 +1162,7 @@ uint unraveldirectory(uint cluster, char* dirname) {
 	}
 }
 
-uint unravelpath(uint cluster, char* dirname) {
+uint unravelpath(uint cluster, char* dirname) { // same, but add to working directory list (for cd)
 	char* token;
 	char* rest;
 
@@ -1323,7 +1329,7 @@ void emptycluster(uint cluster) {
 	fwrite(&zero, sizeof(uint), 1, file);
 }
 
-void printcluster(uint cluster) {
+void printcluster(uint cluster) { // debug (c at prompt)
 	printf( "CURRENT CLUSTER: [%d]\n",cluster);
 	printf( "FILES: [%d]\n",getfiles(cluster));
 }
@@ -1412,7 +1418,7 @@ int getfiles(uint cluster) {
 	return files;
 }
 
-void printpath(void) {
+void printpath(void) { // display working directory
 	stack<string> s;
 	stack<string> q;
 
